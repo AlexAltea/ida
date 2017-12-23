@@ -485,6 +485,120 @@ class AlleyCatGraph(idaapi.GraphViewer):
             for ea in path:
                 self.unhighlight(ea)
 
+# Helpers
+def current_function():
+    return idaapi.get_func(ScreenEA()).startEA
+
+def find_and_plot_paths(sources, targets, klass=AlleyCatFunctionPaths):
+    results = []
+
+    for target in targets:
+        for source in sources:
+            s = time.time()
+            r = klass(source, target).paths
+            e = time.time()
+            print "Found %d paths in %f seconds." % (len(r), (e-s))
+
+            if r:
+                results += r
+            else:
+                name = idc.Name(target)
+                if not name:
+                    name = "0x%X" % target
+                print "No paths found to", name
+
+    if results:
+        return AlleyCatGraph(results, 'Path Graph')
+    return None
+
+def get_user_selected_functions(many=False):
+    functions = []
+    ea = idc.ScreenEA()
+    try:
+        current_function = idc.GetFunctionAttr(ea, idc.FUNCATTR_START)
+    except:
+        current_function = None
+
+    while True:
+        function = idc.ChooseFunction("Select a function and click 'OK' until all functions have been selected. When finished, click 'Cancel' to display the graph.")
+        # ChooseFunction automatically jumps to the selected function
+        # if the enter key is pressed instead of clicking 'OK'. Annoying.
+        if idc.ScreenEA() != ea:
+            idc.Jump(ea)
+
+        if not function or function == idc.BADADDR or function == current_function:
+            break
+        elif function not in functions:
+            functions.append(function)
+
+        if not many:
+            break
+
+    return functions
+
+# Handlers
+class FindPathsFromManyHandler(idaapi.action_handler_t):
+    def __init__(self):
+        idaapi.action_handler_t.__init__(self)
+        self.graph = None
+
+    def activate(self, arg):
+        if self.graph:
+            self.graph.Close()
+        target = current_function()
+        if target:
+            sources = get_user_selected_functions(many=True)
+            if sources:
+                self.graph = find_and_plot_paths(sources, [target])
+        if self.graph:
+            self.graph.Show()
+
+    def update(self, ctx):
+        return idaapi.AST_ENABLE_ALWAYS
+
+class FindPathsToManyHandler(idaapi.action_handler_t):
+    def __init__(self):
+        idaapi.action_handler_t.__init__(self)
+        self.graph = None
+        
+    def activate(self, ctx):
+        if self.graph:
+            self.graph.Close()
+        source = current_function()
+        if source:
+            targets = get_user_selected_functions(many=True)
+            if targets:
+                self.graph = find_and_plot_paths([source], targets)
+        if self.graph:
+            self.graph.Show()
+
+    def update(self, ctx):
+        return idaapi.AST_ENABLE_ALWAYS
+
+class FindPathsToCodeBlockHandler(idaapi.action_handler_t):
+    def __init__(self):
+        idaapi.action_handler_t.__init__(self)
+        self.graph = None
+
+    def activate(self, ctx):
+        if self.graph:
+            self.graph.Close()
+        target = idc.ScreenEA()
+        source = current_function()
+        if source:
+            self.graph = find_and_plot_paths(
+                [source], [target], klass=AlleyCatCodePaths)
+        if self.graph:
+            self.graph.Show()
+
+    def update(self, ctx):
+        return idaapi.AST_ENABLE_ALWAYS
+
+# Actions
+action_alleycat_from = 'alleycat:from'
+action_alleycat_to = 'alleycat:to'
+action_alleycat_block = 'alleycat:block'
+
 class idapathfinder_t(idaapi.plugin_t):
 
     flags = 0
@@ -496,117 +610,75 @@ class idapathfinder_t(idaapi.plugin_t):
     def init(self):
         ui_path = "View/Graphs/"
         self.menu_contexts = []
-        self.graph = None
 
-        self.menu_contexts.append(idaapi.add_menu_item(ui_path,
-                                "Find paths to the current function from...",
-                                "",
-                                0,
-                                self.FindPathsFromMany,
-                                (None,)))
-        self.menu_contexts.append(idaapi.add_menu_item(ui_path,
-                                "Find paths from the current function to...",
-                                "",
-                                0,
-                                self.FindPathsToMany,
-                                (None,)))
-        self.menu_contexts.append(idaapi.add_menu_item(ui_path,
-                                "Find paths in the current function to the current code block",
-                                "",
-                                0,
-                                self.FindPathsToCodeBlock,
-                                (None,)))
-
+        # IDA 7.x
+        if idaapi.IDA_SDK_VERSION >= 700:
+            idaapi.register_action(idaapi.action_desc_t(
+                action_alleycat_from,
+                'Find paths to the current function from...',
+                FindPathsFromManyHandler(),
+                None,
+                'Find paths from other function to the current function'))
+            idaapi.attach_action_to_menu(ui_path,
+                action_alleycat_from, idaapi.SETMENU_APP)
+             
+            idaapi.register_action(idaapi.action_desc_t(
+                action_alleycat_to,
+                'Find paths from the current function to...',
+                FindPathsToManyHandler(),
+                None,
+                'Find paths from the current function to other function'))
+            idaapi.attach_action_to_menu(ui_path,
+                action_alleycat_to, idaapi.SETMENU_APP)
+            
+            idaapi.register_action(idaapi.action_desc_t(
+                action_alleycat_block,
+                'Find paths in the current function to the current code block',
+                FindPathsToCodeBlockHandler(),
+                None,
+                'Find paths in the current function to the current code block'))
+            idaapi.attach_action_to_menu(ui_path,
+                action_alleycat_block, idaapi.SETMENU_APP)
+        # IDA 6.x
+        else:
+            self.menu_contexts.append(idaapi.add_menu_item(ui_path,
+                "Find paths to the current function from...",
+                "",
+                0,
+                self.FindPathsFromMany,
+                (None,)))
+            self.menu_contexts.append(idaapi.add_menu_item(ui_path,
+                "Find paths from the current function to...",
+                "",
+                0,
+                self.FindPathsToMany,
+                (None,)))
+            self.menu_contexts.append(idaapi.add_menu_item(ui_path,
+                "Find paths in the current function to the current code block",
+                "",
+                0,
+                self.FindPathsToCodeBlock,
+                (None,)))
+        
         return idaapi.PLUGIN_KEEP
 
     def term(self):
-        for context in self.menu_contexts:
-            idaapi.del_menu_item(context)
+        # IDA 7.x
+        if idaapi.IDA_SDK_VERSION >= 700:
+            if idaapi.unregister_action(action_alleycat_from) is None:
+                print "Failed to unregister action."
+            if idaapi.unregister_action(action_alleycat_to) is None:
+                print "Failed to unregister action."
+            if idaapi.unregister_action(action_alleycat_block) is None:
+                print "Failed to unregister action."
+        # IDA 6.x
+        else:
+            for context in self.menu_contexts:
+                idaapi.del_menu_item(context)
         return None
 
     def run(self, arg):
         pass
 
-    def _current_function(self):
-        return idaapi.get_func(ScreenEA()).startEA
-
-    def _find_and_plot_paths(self, sources, targets, klass=AlleyCatFunctionPaths):
-        results = []
-
-        for target in targets:
-            for source in sources:
-                s = time.time()
-                r = klass(source, target).paths
-                e = time.time()
-                print "Found %d paths in %f seconds." % (len(r), (e-s))
-
-                if r:
-                    results += r
-                else:
-                    name = idc.Name(target)
-                    if not name:
-                        name = "0x%X" % target
-                    print "No paths found to", name
-
-        if results:
-            # Be sure to close any previous graph before creating a new one.
-            # Failure to do so may crash IDA.
-            try:
-                self.graph.Close()
-            except:
-                pass
-
-            self.graph = AlleyCatGraph(results, 'Path Graph')
-            self.graph.Show()
-
-    def _get_user_selected_functions(self, many=False):
-        functions = []
-        ea = idc.ScreenEA()
-        try:
-            current_function = idc.GetFunctionAttr(ea, idc.FUNCATTR_START)
-        except:
-            current_function = None
-
-        while True:
-            function = idc.ChooseFunction("Select a function and click 'OK' until all functions have been selected. When finished, click 'Cancel' to display the graph.")
-            # ChooseFunction automatically jumps to the selected function
-            # if the enter key is pressed instead of clicking 'OK'. Annoying.
-            if idc.ScreenEA() != ea:
-                idc.Jump(ea)
-
-            if not function or function == idc.BADADDR or function == current_function:
-                break
-            elif function not in functions:
-                functions.append(function)
-
-            if not many:
-                break
-
-        return functions
-
-    def FindPathsToCodeBlock(self, arg):
-        target = idc.ScreenEA()
-        source = self._current_function()
-
-        if source:
-            self._find_and_plot_paths([source], [target], klass=AlleyCatCodePaths)
-
-    def FindPathsToMany(self, arg):
-        source = self._current_function()
-
-        if source:
-            targets = self._get_user_selected_functions(many=True)
-            if targets:
-                self._find_and_plot_paths([source], targets)
-
-    def FindPathsFromMany(self, arg):
-        target = self._current_function()
-
-        if target:
-            sources = self._get_user_selected_functions(many=True)
-            if sources:
-                self._find_and_plot_paths(sources, [target])
-
 def PLUGIN_ENTRY():
     return idapathfinder_t()
-
